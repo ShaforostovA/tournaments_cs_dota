@@ -1,0 +1,2 @@
+ALTER TABLE teams
+ADD COLUMN IF NOT EXISTS status_reason TEXT;

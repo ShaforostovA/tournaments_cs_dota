@@ -1,0 +1,2 @@
+ALTER TABLE teams
+DROP COLUMN IF EXISTS status_reason;
