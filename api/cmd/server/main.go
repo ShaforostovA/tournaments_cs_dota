@@ -5270,7 +5270,7 @@ func authenticateRequest(r *http.Request) (adminInfo, error) {
 func setSessionCookie(w http.ResponseWriter, token string) {
 	secure := strings.EqualFold(os.Getenv("COOKIE_SECURE"), "true")
 	sameSite := parseSameSite(getenvDefault("COOKIE_SAMESITE", "Lax"))
-	http.SetCookie(w, &http.Cookie{
+	cookie := &http.Cookie{
 		Name:     "admin_session",
 		Value:    token,
 		Path:     "/",
@@ -5278,19 +5278,27 @@ func setSessionCookie(w http.ResponseWriter, token string) {
 		Secure:   secure,
 		SameSite: sameSite,
 		MaxAge:   60 * 60 * 24,
-	})
+	}
+	if domain := strings.TrimSpace(os.Getenv("COOKIE_DOMAIN")); domain != "" {
+		cookie.Domain = domain
+	}
+	http.SetCookie(w, cookie)
 }
 
 func clearSessionCookie(w http.ResponseWriter) {
 	sameSite := parseSameSite(getenvDefault("COOKIE_SAMESITE", "Lax"))
-	http.SetCookie(w, &http.Cookie{
+	cookie := &http.Cookie{
 		Name:     "admin_session",
 		Value:    "",
 		Path:     "/",
 		HttpOnly: true,
 		MaxAge:   -1,
 		SameSite: sameSite,
-	})
+	}
+	if domain := strings.TrimSpace(os.Getenv("COOKIE_DOMAIN")); domain != "" {
+		cookie.Domain = domain
+	}
+	http.SetCookie(w, cookie)
 }
 
 func corsMiddleware(next http.Handler) http.Handler {
