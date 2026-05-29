@@ -58,7 +58,7 @@ services:
     networks:
       - tournaments_internal
     ports:
-      - "8080:8080"
+      - "${APP_PORT:-8080}:8080"
 
   web:
     build:
@@ -75,7 +75,7 @@ services:
     networks:
       - tournaments_internal
     ports:
-      - "3000:3000"
+      - "${WEB_PORT:-3000}:3000"
 
   migrate:
     image: migrate/migrate:v4.17.1
