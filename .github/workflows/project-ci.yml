@@ -3,11 +3,11 @@ name: Project CI
 on:
   pull_request:
     branches:
-      - main
+      - master
 
   push:
     branches:
-      - main
+      - master
       - devops/fast-feedback-loop
 
 jobs:
