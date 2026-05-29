@@ -20,3 +20,34 @@ repos:
 
       - id: detect-private-key
         name: Detect private keys
+
+  - repo: https://github.com/Yelp/detect-secrets
+    rev: v1.5.0
+    hooks:
+      - id: detect-secrets
+        name: Detect secrets
+        args:
+          - "--exclude-files"
+          - "package-lock.json|yarn.lock|pnpm-lock.yaml"
+
+  - repo: local
+    hooks:
+      - id: gofmt
+        name: Go formatting
+        entry: gofmt -w
+        language: system
+        files: ^api/.*\.go$
+
+      - id: go-vet
+        name: Go vet
+        entry: python -c "import os, subprocess; os.chdir('api'); subprocess.check_call(['go', 'vet', './...'])"
+        language: system
+        pass_filenames: false
+        files: ^api/.*\.go$
+
+      - id: frontend-lint
+        name: Frontend lint
+        entry: python -c "import os, subprocess; os.chdir('web'); subprocess.check_call(['npm', 'run', 'lint', '--if-present'])"
+        language: system
+        pass_filenames: false
+        files: ^web/.*\.(js|jsx|ts|tsx)$

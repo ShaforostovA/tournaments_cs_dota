@@ -19,30 +19,89 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install YAML validator
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pyyaml
+
       - name: Check YAML files
         run: |
           python - <<'PY'
           import pathlib
           import yaml
 
+          ignored_dirs = {".git", "node_modules", ".next", "dist", "build"}
+
           for path in pathlib.Path(".").rglob("*.yml"):
+              if any(part in ignored_dirs for part in path.parts):
+                  continue
+
               with path.open("r", encoding="utf-8") as file:
                   yaml.safe_load(file)
 
           for path in pathlib.Path(".").rglob("*.yaml"):
+              if any(part in ignored_dirs for part in path.parts):
+                  continue
+
               with path.open("r", encoding="utf-8") as file:
                   yaml.safe_load(file)
 
           print("YAML files are valid")
           PY
 
+      - name: Check JSON files
+        run: |
+          python - <<'PY'
+          import json
+          import pathlib
+
+          ignored_dirs = {".git", "node_modules", ".next", "dist", "build"}
+
+          for path in pathlib.Path(".").rglob("*.json"):
+              if any(part in ignored_dirs for part in path.parts):
+                  continue
+
+              with path.open("r", encoding="utf-8") as file:
+                  json.load(file)
+
+          print("JSON files are valid")
+          PY
+
       - name: Check Go formatting
         run: |
           if [ -d "api" ]; then
             cd api
-            test -z "$(gofmt -l .)"
+
+            unformatted_files="$(gofmt -l .)"
+
+            if [ -n "$unformatted_files" ]; then
+              echo "The following Go files are not formatted:"
+              echo "$unformatted_files"
+              exit 1
+            fi
+
+            echo "Go files are formatted"
           else
             echo "api directory not found, skipping Go formatting check"
+          fi
+
+      - name: Go vet
+        run: |
+          if [ -d "api" ]; then
+            cd api
+            go vet ./...
+          else
+            echo "api directory not found, skipping Go vet"
           fi
 
       - name: Frontend lint
@@ -68,6 +127,11 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: "1.22"
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
 
       - name: Backend tests
         run: |
@@ -101,7 +165,12 @@ jobs:
         run: |
           if grep -RInE "(password|secret|token|api_key)\s*[:=]\s*['\"][^'\"]+['\"]" . \
             --exclude-dir=.git \
-            --exclude-dir=node_modules; then
+            --exclude-dir=node_modules \
+            --exclude-dir=.next \
+            --exclude-dir=dist \
+            --exclude-dir=build \
+            --exclude-dir=.gocache \
+            --exclude-dir=.gomodcache; then
             echo "Potential secret found"
             exit 1
           fi
