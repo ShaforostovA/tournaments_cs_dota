@@ -47,7 +47,7 @@ repos:
 
       - id: frontend-lint
         name: Frontend lint
-        entry: python -c "import os, subprocess; os.chdir('web'); subprocess.check_call(['npm', 'run', 'lint', '--if-present'])"
+        entry: python -c "import os, subprocess, shutil; os.chdir('web'); npm = shutil.which('npm') or shutil.which('npm.cmd'); subprocess.check_call([npm, 'run', 'lint', '--if-present', '--', '--quiet'])"
         language: system
         pass_filenames: false
         files: ^web/.*\.(js|jsx|ts|tsx)$
