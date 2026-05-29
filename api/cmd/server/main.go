@@ -183,15 +183,15 @@ type importCSVResponse struct {
 }
 
 type auditLogEntry struct {
-	ID          int64           `json:"id"`
-	UserID      *int64          `json:"userId,omitempty"`
-	UserLogin   *string         `json:"userLogin,omitempty"`
-	Entity      string          `json:"entity"`
-	EntityID    int64           `json:"entityId"`
-	Action      string          `json:"action"`
-	Payload     json.RawMessage `json:"payload"`
-	CreatedAt   string          `json:"createdAt"`
-	TournamentID int64          `json:"tournamentId"`
+	ID           int64           `json:"id"`
+	UserID       *int64          `json:"userId,omitempty"`
+	UserLogin    *string         `json:"userLogin,omitempty"`
+	Entity       string          `json:"entity"`
+	EntityID     int64           `json:"entityId"`
+	Action       string          `json:"action"`
+	Payload      json.RawMessage `json:"payload"`
+	CreatedAt    string          `json:"createdAt"`
+	TournamentID int64           `json:"tournamentId"`
 }
 
 type auditLogListResponse struct {
@@ -1399,50 +1399,48 @@ func main() {
 		writeJSON(w, http.StatusOK, item)
 	})
 
-	
+	r.Patch("/api/v1/admin/tournaments/{id}/matches/{matchID}/score", func(w http.ResponseWriter, r *http.Request) {
+		admin, err := authenticateRequest(r)
+		if err != nil {
+			http.Error(w, "?? ????????????", http.StatusUnauthorized)
+			return
+		}
 
-r.Patch("/api/v1/admin/tournaments/{id}/matches/{matchID}/score", func(w http.ResponseWriter, r *http.Request) {
-	admin, err := authenticateRequest(r)
-	if err != nil {
-		http.Error(w, "?? ????????????", http.StatusUnauthorized)
-		return
-	}
+		tournamentID := chi.URLParam(r, "id")
+		matchID := chi.URLParam(r, "matchID")
+		var payload updateMatchScoreRequest
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			http.Error(w, "???????????? JSON", http.StatusBadRequest)
+			return
+		}
 
-	tournamentID := chi.URLParam(r, "id")
-	matchID := chi.URLParam(r, "matchID")
-	var payload updateMatchScoreRequest
-	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-		http.Error(w, "???????????? JSON", http.StatusBadRequest)
-		return
-	}
-
-	item, err := updateMatchScore(r.Context(), conn, tournamentID, matchID, payload)
-	if err == sql.ErrNoRows {
-		http.Error(w, "?? ???????", http.StatusNotFound)
-		return
-	}
-	var cErr clientError
-	if errors.As(err, &cErr) {
-		http.Error(w, cErr.Message, cErr.Status)
-		return
-	}
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	if parsedID, parseErr := parseTournamentIDParam(tournamentID); parseErr == nil {
-		if err := insertAuditLog(r.Context(), conn, admin.ID, parsedID, "match", item.MatchID, "score_update", payload); err != nil {
-			http.Error(w, "?? ??????? ???????? ?????-???", http.StatusInternalServerError)
+		item, err := updateMatchScore(r.Context(), conn, tournamentID, matchID, payload)
+		if err == sql.ErrNoRows {
+			http.Error(w, "?? ???????", http.StatusNotFound)
+			return
+		}
+		var cErr clientError
+		if errors.As(err, &cErr) {
+			http.Error(w, cErr.Message, cErr.Status)
+			return
+		}
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if parsedID, parseErr := parseTournamentIDParam(tournamentID); parseErr == nil {
+			if err := insertAuditLog(r.Context(), conn, admin.ID, parsedID, "match", item.MatchID, "score_update", payload); err != nil {
+				http.Error(w, "?? ??????? ???????? ?????-???", http.StatusInternalServerError)
+				return
+			}
+			writeJSON(w, http.StatusOK, item)
+			realtimeHub.broadcast(parsedID, "MATCH_UPDATED")
+			realtimeHub.broadcast(parsedID, "SCHEDULE_UPDATED")
 			return
 		}
 		writeJSON(w, http.StatusOK, item)
-		realtimeHub.broadcast(parsedID, "MATCH_UPDATED")
-		realtimeHub.broadcast(parsedID, "SCHEDULE_UPDATED")
-		return
-	}
-	writeJSON(w, http.StatusOK, item)
-})
-r.Patch("/api/v1/admin/tournaments/{id}/matches/{matchID}/result", func(w http.ResponseWriter, r *http.Request) {
+	})
+	r.Patch("/api/v1/admin/tournaments/{id}/matches/{matchID}/result", func(w http.ResponseWriter, r *http.Request) {
 		admin, err := authenticateRequest(r)
 		if err != nil {
 			http.Error(w, "?? ????????????", http.StatusUnauthorized)
@@ -4256,7 +4254,6 @@ RETURNING status, starts_at, updated_at`
 	return response, nil
 }
 
-
 func updateMatchScore(
 	ctx context.Context,
 	conn *sql.DB,
@@ -4811,12 +4808,12 @@ ORDER BY round ASC, index_in_round ASC`
 		}
 
 		type byeMatch struct {
-			ID         int64
-			Round      int
-			Index      int
-			Bo         int
-			TeamAID    sql.NullInt64
-			TeamBID    sql.NullInt64
+			ID      int64
+			Round   int
+			Index   int
+			Bo      int
+			TeamAID sql.NullInt64
+			TeamBID sql.NullInt64
 		}
 		items := make([]byeMatch, 0)
 		for rows.Next() {
@@ -4844,36 +4841,36 @@ ORDER BY round ASC, index_in_round ASC`
 			if !(missingA || missingB) {
 				continue
 			}
-		if item.Round > 1 {
-			if missingA {
-				var exists bool
-				if err := tx.QueryRowContext(
-					ctx,
-					`SELECT EXISTS(SELECT 1 FROM matches WHERE tournament_id = $1 AND round = $2 AND index_in_round = $3)`,
-					tournamentID,
-					item.Round-1,
-					item.Index*2-1,
-				).Scan(&exists); err != nil {
-					return err
+			if item.Round > 1 {
+				if missingA {
+					var exists bool
+					if err := tx.QueryRowContext(
+						ctx,
+						`SELECT EXISTS(SELECT 1 FROM matches WHERE tournament_id = $1 AND round = $2 AND index_in_round = $3)`,
+						tournamentID,
+						item.Round-1,
+						item.Index*2-1,
+					).Scan(&exists); err != nil {
+						return err
+					}
+					if exists {
+						continue
+					}
 				}
-				if exists {
-					continue
-				}
-			}
-			if missingB {
-				var exists bool
-				if err := tx.QueryRowContext(
-					ctx,
-					`SELECT EXISTS(SELECT 1 FROM matches WHERE tournament_id = $1 AND round = $2 AND index_in_round = $3)`,
-					tournamentID,
-					item.Round-1,
-					item.Index*2,
-				).Scan(&exists); err != nil {
-					return err
-				}
-				if exists {
-					continue
-				}
+				if missingB {
+					var exists bool
+					if err := tx.QueryRowContext(
+						ctx,
+						`SELECT EXISTS(SELECT 1 FROM matches WHERE tournament_id = $1 AND round = $2 AND index_in_round = $3)`,
+						tournamentID,
+						item.Round-1,
+						item.Index*2,
+					).Scan(&exists); err != nil {
+						return err
+					}
+					if exists {
+						continue
+					}
 				}
 			}
 
