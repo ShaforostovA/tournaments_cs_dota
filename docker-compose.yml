@@ -2,28 +2,50 @@ services:
   db:
     image: postgres:16-alpine
     container_name: tournaments_db
+    restart: unless-stopped
     environment:
-      POSTGRES_USER: tournaments
-      POSTGRES_PASSWORD: tournaments # pragma: allowlist secret
-      POSTGRES_DB: tournaments
-    ports:
-      - "5432:5432"
+      POSTGRES_USER: ${POSTGRES_USER:-tournaments}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-tournaments} # pragma: allowlist secret
+      POSTGRES_DB: ${POSTGRES_DB:-tournaments}
     volumes:
       - db_data:/var/lib/postgresql/data
+    networks:
+      - tournaments_internal
+    expose:
+      - "5432"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U tournaments -d tournaments"]
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U ${POSTGRES_USER:-tournaments} -d ${POSTGRES_DB:-tournaments}"
+        ]
       interval: 5s
       timeout: 3s
       retries: 10
 
-  api:
+  cache:
+    image: redis:7-alpine
+    container_name: tournaments_cache
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - cache_data:/data
+    networks:
+      - tournaments_internal
+    expose:
+      - "6379"
+
+  app:
     build:
       context: ./api
       dockerfile: Dockerfile
+    image: tournaments-cs-dota-api:local
     container_name: tournaments_api
+    restart: unless-stopped
     environment:
       PORT: "8080"
-      DATABASE_URL: "postgres://tournaments:tournaments@db:5432/tournaments?sslmode=disable" # pragma: allowlist secret
+      DATABASE_URL: "postgres://${POSTGRES_USER:-tournaments}:${POSTGRES_PASSWORD:-tournaments}@db:5432/${POSTGRES_DB:-tournaments}?sslmode=disable" # pragma: allowlist secret
+      CACHE_URL: "redis://cache:6379/0"
       FRONTEND_URL: "http://localhost:3000"
       CORS_ALLOWED_ORIGINS: "http://localhost:3000"
       COOKIE_SECURE: "false"
@@ -31,32 +53,29 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      cache:
+        condition: service_started
+    networks:
+      - tournaments_internal
     ports:
       - "8080:8080"
-    healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://localhost:8080/health || exit 1"]
-      interval: 10s
-      timeout: 3s
-      retries: 6
 
   web:
     build:
       context: ./web
       dockerfile: Dockerfile
+    image: tournaments-cs-dota-web:local
     container_name: tournaments_web
+    restart: unless-stopped
     environment:
-      API_URL: "http://api:8080"
+      API_URL: "http://app:8080"
       NEXT_PUBLIC_API_URL: "http://localhost:8080"
     depends_on:
-      api:
-        condition: service_healthy
+      - app
+    networks:
+      - tournaments_internal
     ports:
       - "3000:3000"
-    healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://localhost:3000/ || exit 1"]
-      interval: 10s
-      timeout: 3s
-      retries: 6
 
   migrate:
     image: migrate/migrate:v4.17.1
@@ -65,15 +84,22 @@ services:
       db:
         condition: service_healthy
     volumes:
-      - ./api/migrations:/migrations
+      - ./api/migrations:/migrations:ro
     command:
       [
         "-path",
         "/migrations",
         "-database",
-        "postgres://tournaments:tournaments@db:5432/tournaments?sslmode=disable", # pragma: allowlist secret
+        "postgres://${POSTGRES_USER:-tournaments}:${POSTGRES_PASSWORD:-tournaments}@db:5432/${POSTGRES_DB:-tournaments}?sslmode=disable", # pragma: allowlist secret
         "up"
       ]
+    networks:
+      - tournaments_internal
 
 volumes:
   db_data:
+  cache_data:
+
+networks:
+  tournaments_internal:
+    driver: bridge
