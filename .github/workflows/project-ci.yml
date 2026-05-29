@@ -4,11 +4,18 @@ on:
   pull_request:
     branches:
       - master
+      - main
 
   push:
     branches:
       - master
+      - main
       - devops/fast-feedback-loop
+      - devops/containerization
+
+permissions:
+  contents: read
+  packages: write
 
 jobs:
   lint:
@@ -109,7 +116,7 @@ jobs:
           if [ -d "web" ]; then
             cd web
             npm ci
-            npm run lint --if-present
+            npm run lint --if-present -- --quiet
           else
             echo "web directory not found, skipping frontend lint"
           fi
@@ -176,3 +183,36 @@ jobs:
           fi
 
           echo "No obvious secrets found"
+
+  build-and-push:
+    name: Build and Push Docker image
+    runs-on: ubuntu-latest
+    needs:
+      - lint
+      - test
+      - security
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main')
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push API image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./api
+          file: ./api/Dockerfile
+          push: true
+          tags: |
+            ghcr.io/shaforostova/tournaments-cs-dota-api:latest
+            ghcr.io/shaforostova/tournaments-cs-dota-api:${{ github.sha }}
