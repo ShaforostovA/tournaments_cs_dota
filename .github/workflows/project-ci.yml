@@ -1,0 +1,109 @@
+name: Project CI
+
+on:
+  pull_request:
+    branches:
+      - main
+
+  push:
+    branches:
+      - main
+      - devops/fast-feedback-loop
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Check YAML files
+        run: |
+          python - <<'PY'
+          import pathlib
+          import yaml
+
+          for path in pathlib.Path(".").rglob("*.yml"):
+              with path.open("r", encoding="utf-8") as file:
+                  yaml.safe_load(file)
+
+          for path in pathlib.Path(".").rglob("*.yaml"):
+              with path.open("r", encoding="utf-8") as file:
+                  yaml.safe_load(file)
+
+          print("YAML files are valid")
+          PY
+
+      - name: Check Go formatting
+        run: |
+          if [ -d "api" ]; then
+            cd api
+            test -z "$(gofmt -l .)"
+          else
+            echo "api directory not found, skipping Go formatting check"
+          fi
+
+      - name: Frontend lint
+        run: |
+          if [ -d "web" ]; then
+            cd web
+            npm ci
+            npm run lint --if-present
+          else
+            echo "web directory not found, skipping frontend lint"
+          fi
+
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    needs: lint
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+
+      - name: Backend tests
+        run: |
+          if [ -d "api" ]; then
+            cd api
+            go test ./...
+          else
+            echo "api directory not found, skipping backend tests"
+          fi
+
+      - name: Frontend tests
+        run: |
+          if [ -d "web" ]; then
+            cd web
+            npm ci
+            npm test --if-present
+          else
+            echo "web directory not found, skipping frontend tests"
+          fi
+
+  security:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    needs: test
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Basic secret scan
+        run: |
+          if grep -RInE "(password|secret|token|api_key)\s*[:=]\s*['\"][^'\"]+['\"]" . \
+            --exclude-dir=.git \
+            --exclude-dir=node_modules; then
+            echo "Potential secret found"
+            exit 1
+          fi
+
+          echo "No obvious secrets found"
