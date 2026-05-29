@@ -843,4 +843,3 @@ export function ScheduleManager({ tournamentId, game }: { tournamentId: number; 
     </section>
   );
 }
-
