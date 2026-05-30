@@ -19,7 +19,7 @@ permissions:
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: shaforostova/tournaments-cs-dota-api
-  GO_VERSION: "1.22"
+  GO_VERSION: "1.25.10"
   NODE_VERSION: "20"
 
 jobs:
