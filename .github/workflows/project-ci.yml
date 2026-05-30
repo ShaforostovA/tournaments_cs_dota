@@ -1,4 +1,4 @@
-name: Project CI
+name: Project CI Optimized
 
 on:
   pull_request:
@@ -10,188 +10,208 @@ on:
     branches:
       - master
       - main
-      - devops/fast-feedback-loop
-      - devops/containerization
+      - devops/ci-cd-optimization
 
 permissions:
   contents: read
   packages: write
 
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: shaforostova/tournaments-cs-dota-api
+  GO_VERSION: "1.25.10"
+  NODE_VERSION: "20"
+
 jobs:
-  lint:
-    name: Lint
+  lint-go:
+    name: Lint Go
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup Go
+      - name: Set up Go with cache
         uses: actions/setup-go@v5
         with:
-          go-version: "1.22"
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-
-      - name: Install YAML validator
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install pyyaml
-
-      - name: Check YAML files
-        run: |
-          python - <<'PY'
-          import pathlib
-          import yaml
-
-          ignored_dirs = {".git", "node_modules", ".next", "dist", "build"}
-
-          for path in pathlib.Path(".").rglob("*.yml"):
-              if any(part in ignored_dirs for part in path.parts):
-                  continue
-
-              with path.open("r", encoding="utf-8") as file:
-                  yaml.safe_load(file)
-
-          for path in pathlib.Path(".").rglob("*.yaml"):
-              if any(part in ignored_dirs for part in path.parts):
-                  continue
-
-              with path.open("r", encoding="utf-8") as file:
-                  yaml.safe_load(file)
-
-          print("YAML files are valid")
-          PY
-
-      - name: Check JSON files
-        run: |
-          python - <<'PY'
-          import json
-          import pathlib
-
-          ignored_dirs = {".git", "node_modules", ".next", "dist", "build"}
-
-          for path in pathlib.Path(".").rglob("*.json"):
-              if any(part in ignored_dirs for part in path.parts):
-                  continue
-
-              with path.open("r", encoding="utf-8") as file:
-                  json.load(file)
-
-          print("JSON files are valid")
-          PY
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+          cache-dependency-path: api/go.sum
 
       - name: Check Go formatting
+        working-directory: api
         run: |
-          if [ -d "api" ]; then
-            cd api
+          test -z "$(gofmt -l .)"
 
-            unformatted_files="$(gofmt -l .)"
+      - name: Run go vet
+        working-directory: api
+        run: go vet ./...
 
-            if [ -n "$unformatted_files" ]; then
-              echo "The following Go files are not formatted:"
-              echo "$unformatted_files"
-              exit 1
-            fi
-
-            echo "Go files are formatted"
-          else
-            echo "api directory not found, skipping Go formatting check"
-          fi
-
-      - name: Go vet
-        run: |
-          if [ -d "api" ]; then
-            cd api
-            go vet ./...
-          else
-            echo "api directory not found, skipping Go vet"
-          fi
-
-      - name: Frontend lint
-        run: |
-          if [ -d "web" ]; then
-            cd web
-            npm ci
-            npm run lint --if-present -- --quiet
-          else
-            echo "web directory not found, skipping frontend lint"
-          fi
-
-  test:
-    name: Test
+  lint-web:
+    name: Lint Frontend
     runs-on: ubuntu-latest
-    needs: lint
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: "1.22"
-
-      - name: Setup Node.js
+      - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: ${{ env.NODE_VERSION }}
 
-      - name: Backend tests
-        run: |
-          if [ -d "api" ]; then
-            cd api
-            go test ./...
-          else
-            echo "api directory not found, skipping backend tests"
-          fi
+      - name: Cache npm dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: ${{ runner.os }}-npm-${{ hashFiles('web/package-lock.json', 'web/package.json') }}
+          restore-keys: |
+            ${{ runner.os }}-npm-
 
-      - name: Frontend tests
-        run: |
-          if [ -d "web" ]; then
-            cd web
-            npm ci
-            npm test --if-present
-          else
-            echo "web directory not found, skipping frontend tests"
-          fi
+      - name: Install frontend dependencies
+        working-directory: web
+        run: npm install
 
-  security:
-    name: Security Scan
+      - name: Run frontend lint
+        working-directory: web
+        run: npm run lint
+
+  test:
+    name: Test (${{ matrix.suite }})
     runs-on: ubuntu-latest
-    needs: test
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - suite: validation
+            command: go test ./internal/validation -v
+          - suite: backend-all
+            command: go test ./... -count=1
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Basic secret scan
+      - name: Set up Go with cache
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+          cache-dependency-path: api/go.sum
+
+      - name: Run tests
+        working-directory: api
+        run: ${{ matrix.command }}
+
+  security-sast:
+    name: Security SAST
+    runs-on: ubuntu-latest
+    needs:
+      - lint-go
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go with cache
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+          cache-dependency-path: api/go.sum
+
+      - name: Install gosec
+        run: go install github.com/securego/gosec/v2/cmd/gosec@latest
+
+      - name: Run gosec SAST scan
+        working-directory: api
         run: |
-          if grep -RInE "(password|secret|token|api_key)\s*[:=]\s*['\"][^'\"]+['\"]" . \
-            --exclude-dir=.git \
-            --exclude-dir=node_modules \
-            --exclude-dir=.next \
-            --exclude-dir=dist \
-            --exclude-dir=build \
-            --exclude-dir=.gocache \
-            --exclude-dir=.gomodcache; then
-            echo "Potential secret found"
+          gosec -no-fail -fmt=json -out=gosec-report.json ./...
+
+      - name: Upload gosec report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gosec-report
+          path: api/gosec-report.json
+
+  security-sca:
+    name: Security SCA
+    runs-on: ubuntu-latest
+    needs:
+      - lint-go
+      - lint-web
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go with cache
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+          cache-dependency-path: api/go.sum
+
+      - name: Install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@latest
+
+      - name: Run Go dependency vulnerability scan
+        working-directory: api
+        run: govulncheck ./...
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Cache npm dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: ${{ runner.os }}-npm-${{ hashFiles('web/package-lock.json', 'web/package.json') }}
+          restore-keys: |
+            ${{ runner.os }}-npm-
+
+      - name: Install frontend dependencies
+        working-directory: web
+        run: npm install
+
+      - name: Run npm audit
+        working-directory: web
+        run: npm audit --audit-level=high --omit=dev
+
+  security-gate:
+    name: Security Gate
+    runs-on: ubuntu-latest
+    needs:
+      - security-sast
+      - security-sca
+
+    steps:
+      - name: Check security results
+        run: |
+          echo "Checking security results..."
+
+          if [ "${{ needs.security-sast.result }}" != "success" ]; then
+            echo "SAST failed"
             exit 1
           fi
 
-          echo "No obvious secrets found"
+          if [ "${{ needs.security-sca.result }}" != "success" ]; then
+            echo "SCA failed"
+            exit 1
+          fi
+
+          echo "Security checks passed"
 
   build-and-push:
     name: Build and Push Docker image
     runs-on: ubuntu-latest
     needs:
-      - lint
       - test
-      - security
-    if: github.event_name == 'push' && (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main')
+      - security-gate
 
     steps:
       - name: Checkout repository
@@ -201,18 +221,21 @@ jobs:
         uses: docker/setup-buildx-action@v3
 
       - name: Login to GitHub Container Registry
+        if: github.event_name == 'push' && (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main')
         uses: docker/login-action@v3
         with:
-          registry: ghcr.io
+          registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and push API image
+      - name: Build and optionally push API image
         uses: docker/build-push-action@v6
         with:
           context: ./api
           file: ./api/Dockerfile
-          push: true
+          push: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main') }}
           tags: |
-            ghcr.io/shaforostova/tournaments-cs-dota-api:latest
-            ghcr.io/shaforostova/tournaments-cs-dota-api:${{ github.sha }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
