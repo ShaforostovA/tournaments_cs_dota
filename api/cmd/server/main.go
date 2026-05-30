@@ -21,6 +21,7 @@ import (
 	"github.com/gorilla/websocket"
 	"golang.org/x/crypto/bcrypt"
 	"tournaments/api/internal/db"
+	"tournaments/api/internal/observability"
 )
 
 type healthResponse struct {
@@ -449,6 +450,7 @@ func (e clientError) Error() string {
 func main() {
 	r := chi.NewRouter()
 	r.Use(corsMiddleware)
+	r.Use(observability.Middleware)
 
 	conn, err := db.Open()
 	if err != nil {
@@ -466,10 +468,12 @@ func main() {
 		writeJSON(w, http.StatusOK, healthResponse{Status: "ready", Time: time.Now().UTC().Format(time.RFC3339)})
 	})
 
+	r.Handle("/metrics", observability.MetricsHandler())
+
 	r.Get("/ws", func(w http.ResponseWriter, r *http.Request) {
 		tournamentID, err := parseTournamentIDParam(r.URL.Query().Get("tournamentId"))
 		if err != nil {
-			http.Error(w, "???????????? id ???????", http.StatusBadRequest)
+			http.Error(w, "invalid tournament id", http.StatusBadRequest)
 			return
 		}
 		if err := realtimeHub.serveWS(w, r, tournamentID); err != nil {
@@ -492,7 +496,7 @@ func main() {
 		id := chi.URLParam(r, "id")
 		item, err := getTournament(r.Context(), conn, id)
 		if err == sql.ErrNoRows {
-			http.Error(w, "?? ???????", http.StatusNotFound)
+			http.Error(w, "not found", http.StatusNotFound)
 			return
 		}
 		if err != nil {
@@ -506,7 +510,7 @@ func main() {
 		id := chi.URLParam(r, "id")
 		item, err := getTournament(r.Context(), conn, id)
 		if err == sql.ErrNoRows {
-			http.Error(w, "?? ???????", http.StatusNotFound)
+			http.Error(w, "not found", http.StatusNotFound)
 			return
 		}
 		if err != nil {
@@ -527,7 +531,7 @@ func main() {
 		id := chi.URLParam(r, "id")
 		item, err := getTournament(r.Context(), conn, id)
 		if err == sql.ErrNoRows {
-			http.Error(w, "?? ???????", http.StatusNotFound)
+			http.Error(w, "not found", http.StatusNotFound)
 			return
 		}
 		if err != nil {
@@ -546,7 +550,7 @@ func main() {
 	r.Get("/api/v1/matches/active", func(w http.ResponseWriter, r *http.Request) {
 		game := strings.ToUpper(strings.TrimSpace(r.URL.Query().Get("game")))
 		if game != "" && game != "DOTA2" && game != "CS2" {
-			http.Error(w, "???? ?? ??????????????", http.StatusBadRequest)
+			http.Error(w, "unsupported game", http.StatusBadRequest)
 			return
 		}
 
@@ -554,7 +558,7 @@ func main() {
 		if raw := strings.TrimSpace(r.URL.Query().Get("tournamentId")); raw != "" {
 			parsed, err := strconv.ParseInt(raw, 10, 64)
 			if err != nil || parsed < 1 {
-				http.Error(w, "???????????? id ???????", http.StatusBadRequest)
+				http.Error(w, "invalid tournament id", http.StatusBadRequest)
 				return
 			}
 			tournamentID = parsed
@@ -571,23 +575,23 @@ func main() {
 	r.Post("/api/v1/admin/login", func(w http.ResponseWriter, r *http.Request) {
 		clientKey := clientIP(r)
 		if !loginLimiter.Allow(clientKey) {
-			http.Error(w, "??????? ????? ??????? ?????", http.StatusTooManyRequests)
+			http.Error(w, "too many login attempts", http.StatusTooManyRequests)
 			return
 		}
 		var payload loginRequest
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-			http.Error(w, "???????????? JSON", http.StatusBadRequest)
+			http.Error(w, "invalid JSON", http.StatusBadRequest)
 			return
 		}
 		payload.Login = strings.TrimSpace(payload.Login)
 		if payload.Login == "" || payload.Password == "" {
-			http.Error(w, "????? ? ?????? ???????????", http.StatusBadRequest)
+			http.Error(w, "login and password are required", http.StatusBadRequest)
 			return
 		}
 
 		user, err := findUserByLogin(r.Context(), conn, payload.Login)
 		if err == sql.ErrNoRows {
-			http.Error(w, "???????? ??????? ??????", http.StatusUnauthorized)
+			http.Error(w, "invalid login or password", http.StatusUnauthorized)
 			return
 		}
 		if err != nil {
@@ -596,7 +600,7 @@ func main() {
 		}
 
 		if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(payload.Password)); err != nil {
-			http.Error(w, "???????? ??????? ??????", http.StatusUnauthorized)
+			http.Error(w, "invalid login or password", http.StatusUnauthorized)
 			return
 		}
 
@@ -618,7 +622,7 @@ func main() {
 	r.Get("/api/v1/admin/me", func(w http.ResponseWriter, r *http.Request) {
 		info, err := authenticateRequest(r)
 		if err != nil {
-			http.Error(w, "?? ????????????", http.StatusUnauthorized)
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
 		writeJSON(w, http.StatusOK, info)
@@ -626,7 +630,7 @@ func main() {
 
 	r.Get("/api/v1/admin/tournaments", func(w http.ResponseWriter, r *http.Request) {
 		if _, err := authenticateRequest(r); err != nil {
-			http.Error(w, "?? ????????????", http.StatusUnauthorized)
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
 
@@ -651,24 +655,24 @@ func main() {
 	r.Post("/api/v1/admin/tournaments", func(w http.ResponseWriter, r *http.Request) {
 		admin, err := authenticateRequest(r)
 		if err != nil {
-			http.Error(w, "?? ????????????", http.StatusUnauthorized)
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
 
 		var payload createTournamentRequest
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-			http.Error(w, "???????????? JSON", http.StatusBadRequest)
+			http.Error(w, "invalid JSON", http.StatusBadRequest)
 			return
 		}
 
 		payload.Name = strings.TrimSpace(payload.Name)
 		payload.Game = strings.ToUpper(strings.TrimSpace(payload.Game))
 		if payload.Name == "" || payload.Game == "" {
-			http.Error(w, "???????? ? ???? ???????????", http.StatusBadRequest)
+			http.Error(w, "name and game are required", http.StatusBadRequest)
 			return
 		}
 		if payload.Game != "DOTA2" && payload.Game != "CS2" {
-			http.Error(w, "???? ?? ??????????????", http.StatusBadRequest)
+			http.Error(w, "unsupported game", http.StatusBadRequest)
 			return
 		}
 
@@ -679,7 +683,7 @@ func main() {
 		}
 
 		if err := insertAuditLog(r.Context(), conn, admin.ID, created.ID, "tournament", created.ID, "create", payload); err != nil {
-			http.Error(w, "?? ??????? ???????? ?????-???", http.StatusInternalServerError)
+			http.Error(w, "failed to create audit log", http.StatusInternalServerError)
 			return
 		}
 
@@ -689,14 +693,14 @@ func main() {
 
 	r.Get("/api/v1/admin/tournaments/{id}", func(w http.ResponseWriter, r *http.Request) {
 		if _, err := authenticateRequest(r); err != nil {
-			http.Error(w, "?? ????????????", http.StatusUnauthorized)
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
 
 		id := chi.URLParam(r, "id")
 		item, err := getTournament(r.Context(), conn, id)
 		if err == sql.ErrNoRows {
-			http.Error(w, "?? ???????", http.StatusNotFound)
+			http.Error(w, "not found", http.StatusNotFound)
 			return
 		}
 		if err != nil {
@@ -708,7 +712,7 @@ func main() {
 
 	r.Get("/api/v1/admin/tournaments/{id}/audit", func(w http.ResponseWriter, r *http.Request) {
 		if _, err := authenticateRequest(r); err != nil {
-			http.Error(w, "?? ????????????", http.StatusUnauthorized)
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
 
@@ -721,7 +725,7 @@ func main() {
 
 		result, err := listAuditLogs(r.Context(), conn, tournamentID, page, pageSize)
 		if err == sql.ErrNoRows {
-			http.Error(w, "?? ???????", http.StatusNotFound)
+			http.Error(w, "not found", http.StatusNotFound)
 			return
 		}
 		if err != nil {
@@ -734,20 +738,20 @@ func main() {
 	r.Patch("/api/v1/admin/tournaments/{id}", func(w http.ResponseWriter, r *http.Request) {
 		admin, err := authenticateRequest(r)
 		if err != nil {
-			http.Error(w, "?? ????????????", http.StatusUnauthorized)
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
 
 		id := chi.URLParam(r, "id")
 		var payload updateTournamentRequest
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-			http.Error(w, "???????????? JSON", http.StatusBadRequest)
+			http.Error(w, "invalid JSON", http.StatusBadRequest)
 			return
 		}
 
 		updated, err := updateTournament(r.Context(), conn, id, payload)
 		if err == sql.ErrNoRows {
-			http.Error(w, "?? ???????", http.StatusNotFound)
+			http.Error(w, "not found", http.StatusNotFound)
 			return
 		}
 		var cErr clientError
@@ -761,7 +765,7 @@ func main() {
 		}
 
 		if err := insertAuditLog(r.Context(), conn, admin.ID, updated.ID, "tournament", updated.ID, "update", payload); err != nil {
-			http.Error(w, "?? ??????? ???????? ?????-???", http.StatusInternalServerError)
+			http.Error(w, "failed to create audit log", http.StatusInternalServerError)
 			return
 		}
 
@@ -772,14 +776,14 @@ func main() {
 	r.Delete("/api/v1/admin/tournaments/{id}", func(w http.ResponseWriter, r *http.Request) {
 		admin, err := authenticateRequest(r)
 		if err != nil {
-			http.Error(w, "?? ????????????", http.StatusUnauthorized)
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
 
 		id := chi.URLParam(r, "id")
 		deleted, err := deleteTournament(r.Context(), conn, id)
 		if err == sql.ErrNoRows {
-			http.Error(w, "?? ???????", http.StatusNotFound)
+			http.Error(w, "not found", http.StatusNotFound)
 			return
 		}
 		var cErr clientError
@@ -793,7 +797,7 @@ func main() {
 		}
 
 		if err := insertAuditLog(r.Context(), conn, admin.ID, deleted.ID, "tournament", deleted.ID, "delete", nil); err != nil {
-			http.Error(w, "?? ??????? ???????? ?????-???", http.StatusInternalServerError)
+			http.Error(w, "failed to create audit log", http.StatusInternalServerError)
 			return
 		}
 
@@ -803,7 +807,7 @@ func main() {
 
 	r.Get("/api/v1/admin/tournaments/{id}/teams", func(w http.ResponseWriter, r *http.Request) {
 		if _, err := authenticateRequest(r); err != nil {
-			http.Error(w, "?? ????????????", http.StatusUnauthorized)
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
 
@@ -825,14 +829,14 @@ func main() {
 	r.Post("/api/v1/admin/tournaments/{id}/teams", func(w http.ResponseWriter, r *http.Request) {
 		admin, err := authenticateRequest(r)
 		if err != nil {
-			http.Error(w, "?? ????????????", http.StatusUnauthorized)
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
 
 		tournamentID := chi.URLParam(r, "id")
 		var payload createTeamRequest
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-			http.Error(w, "???????????? JSON", http.StatusBadRequest)
+			http.Error(w, "invalid JSON", http.StatusBadRequest)
 			return
 		}
 
@@ -847,7 +851,7 @@ func main() {
 			return
 		}
 		if err := insertAuditLog(r.Context(), conn, admin.ID, created.TournamentID, "team", created.ID, "create", payload); err != nil {
-			http.Error(w, "?? ??????? ???????? ?????-???", http.StatusInternalServerError)
+			http.Error(w, "failed to create audit log", http.StatusInternalServerError)
 			return
 		}
 		writeJSON(w, http.StatusCreated, created)
@@ -857,7 +861,7 @@ func main() {
 	r.Patch("/api/v1/admin/tournaments/{id}/teams/{teamID}", func(w http.ResponseWriter, r *http.Request) {
 		admin, err := authenticateRequest(r)
 		if err != nil {
-			http.Error(w, "?? ????????????", http.StatusUnauthorized)
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
 
@@ -865,13 +869,13 @@ func main() {
 		teamID := chi.URLParam(r, "teamID")
 		var payload updateTeamRequest
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-			http.Error(w, "???????????? JSON", http.StatusBadRequest)
+			http.Error(w, "invalid JSON", http.StatusBadRequest)
 			return
 		}
 
 		updated, err := updateTeam(r.Context(), conn, tournamentID, teamID, payload)
 		if err == sql.ErrNoRows {
-			http.Error(w, "?? ???????", http.StatusNotFound)
+			http.Error(w, "not found", http.StatusNotFound)
 			return
 		}
 		var cErr clientError
@@ -884,7 +888,7 @@ func main() {
 			return
 		}
 		if err := insertAuditLog(r.Context(), conn, admin.ID, updated.TournamentID, "team", updated.ID, "update", payload); err != nil {
-			http.Error(w, "?? ??????? ???????? ?????-???", http.StatusInternalServerError)
+			http.Error(w, "failed to create audit log", http.StatusInternalServerError)
 			return
 		}
 		writeJSON(w, http.StatusOK, updated)
@@ -894,7 +898,7 @@ func main() {
 	r.Patch("/api/v1/admin/tournaments/{id}/teams/{teamID}/status", func(w http.ResponseWriter, r *http.Request) {
 		admin, err := authenticateRequest(r)
 		if err != nil {
-			http.Error(w, "?? ????????????", http.StatusUnauthorized)
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
 
@@ -902,13 +906,13 @@ func main() {
 		teamID := chi.URLParam(r, "teamID")
 		var payload updateTeamStatusRequest
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-			http.Error(w, "???????????? JSON", http.StatusBadRequest)
+			http.Error(w, "invalid JSON", http.StatusBadRequest)
 			return
 		}
 
 		updated, err := updateTeamStatus(r.Context(), conn, tournamentID, teamID, payload)
 		if err == sql.ErrNoRows {
-			http.Error(w, "?? ???????", http.StatusNotFound)
+			http.Error(w, "not found", http.StatusNotFound)
 			return
 		}
 		var cErr clientError
@@ -921,7 +925,7 @@ func main() {
 			return
 		}
 		if err := insertAuditLog(r.Context(), conn, admin.ID, updated.TournamentID, "team", updated.ID, "status_update", payload); err != nil {
-			http.Error(w, "?? ??????? ???????? ?????-???", http.StatusInternalServerError)
+			http.Error(w, "failed to create audit log", http.StatusInternalServerError)
 			return
 		}
 		writeJSON(w, http.StatusOK, updated)
@@ -931,18 +935,18 @@ func main() {
 	r.Post("/api/v1/admin/tournaments/{id}/teams/import", func(w http.ResponseWriter, r *http.Request) {
 		admin, err := authenticateRequest(r)
 		if err != nil {
-			http.Error(w, "?? ????????????", http.StatusUnauthorized)
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
 
 		if err := r.ParseMultipartForm(10 << 20); err != nil {
-			http.Error(w, "???????????? ????? ????????", http.StatusBadRequest)
+			http.Error(w, "invalid uploaded file", http.StatusBadRequest)
 			return
 		}
 
 		file, _, err := r.FormFile("file")
 		if err != nil {
-			http.Error(w, "???? ??????????", http.StatusBadRequest)
+			http.Error(w, "file is required", http.StatusBadRequest)
 			return
 		}
 		defer file.Close()
@@ -953,7 +957,7 @@ func main() {
 		tournamentID := chi.URLParam(r, "id")
 		result, err := importTeamsFromCSV(r.Context(), conn, tournamentID, file, dryRun)
 		if err == sql.ErrNoRows {
-			http.Error(w, "?? ???????", http.StatusNotFound)
+			http.Error(w, "not found", http.StatusNotFound)
 			return
 		}
 		var cErr clientError
@@ -973,7 +977,7 @@ func main() {
 				"duplicates": result.Duplicates,
 				"errors":     len(result.Errors),
 			}); err != nil {
-				http.Error(w, "?? ??????? ???????? ?????-???", http.StatusInternalServerError)
+				http.Error(w, "failed to create audit log", http.StatusInternalServerError)
 				return
 			}
 		}
@@ -987,7 +991,7 @@ func main() {
 	r.Delete("/api/v1/admin/tournaments/{id}/teams/{teamID}", func(w http.ResponseWriter, r *http.Request) {
 		admin, err := authenticateRequest(r)
 		if err != nil {
-			http.Error(w, "?? ????????????", http.StatusUnauthorized)
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
 
@@ -995,18 +999,18 @@ func main() {
 		teamID := chi.URLParam(r, "teamID")
 		parsedTournamentID, parseErr := parseTournamentIDParam(tournamentID)
 		if parseErr != nil {
-			http.Error(w, "???????????? id ???????", http.StatusBadRequest)
+			http.Error(w, "invalid tournament id", http.StatusBadRequest)
 			return
 		}
 		parsedTeamID, parseErr := strconv.ParseInt(strings.TrimSpace(teamID), 10, 64)
 		if parseErr != nil || parsedTeamID < 1 {
-			http.Error(w, "???????????? id ???????", http.StatusBadRequest)
+			http.Error(w, "invalid tournament id", http.StatusBadRequest)
 			return
 		}
 
 		err = deleteTeam(r.Context(), conn, tournamentID, teamID)
 		if err == sql.ErrNoRows {
-			http.Error(w, "?? ???????", http.StatusNotFound)
+			http.Error(w, "not found", http.StatusNotFound)
 			return
 		}
 		if err != nil {
@@ -1015,7 +1019,7 @@ func main() {
 		}
 
 		if err := insertAuditLog(r.Context(), conn, admin.ID, parsedTournamentID, "team", parsedTeamID, "delete", map[string]string{"teamId": teamID}); err != nil {
-			http.Error(w, "?? ??????? ???????? ?????-???", http.StatusInternalServerError)
+			http.Error(w, "failed to create audit log", http.StatusInternalServerError)
 			return
 		}
 
@@ -1025,14 +1029,14 @@ func main() {
 
 	r.Get("/api/v1/admin/tournaments/{id}/teams/validation", func(w http.ResponseWriter, r *http.Request) {
 		if _, err := authenticateRequest(r); err != nil {
-			http.Error(w, "?? ????????????", http.StatusUnauthorized)
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
 
 		tournamentID := chi.URLParam(r, "id")
 		result, err := validateTeamsForTournament(r.Context(), conn, tournamentID)
 		if err == sql.ErrNoRows {
-			http.Error(w, "?? ???????", http.StatusNotFound)
+			http.Error(w, "not found", http.StatusNotFound)
 			return
 		}
 		if err != nil {
@@ -1046,20 +1050,20 @@ func main() {
 	r.Post("/api/v1/admin/tournaments/{id}/teams/seeding/generate", func(w http.ResponseWriter, r *http.Request) {
 		admin, err := authenticateRequest(r)
 		if err != nil {
-			http.Error(w, "?? ????????????", http.StatusUnauthorized)
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
 
 		tournamentID := chi.URLParam(r, "id")
 		var payload generateSeedingRequest
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-			http.Error(w, "???????????? JSON", http.StatusBadRequest)
+			http.Error(w, "invalid JSON", http.StatusBadRequest)
 			return
 		}
 
 		result, err := generateTeamSeeding(r.Context(), conn, tournamentID, payload.Overwrite)
 		if err == sql.ErrNoRows {
-			http.Error(w, "?? ???????", http.StatusNotFound)
+			http.Error(w, "not found", http.StatusNotFound)
 			return
 		}
 		var cErr clientError
@@ -1076,7 +1080,7 @@ func main() {
 			action = "seeding_regenerate"
 		}
 		if err := insertAuditLog(r.Context(), conn, admin.ID, result.TournamentID, "tournament", result.TournamentID, action, payload); err != nil {
-			http.Error(w, "?? ??????? ???????? ?????-???", http.StatusInternalServerError)
+			http.Error(w, "failed to create audit log", http.StatusInternalServerError)
 			return
 		}
 		writeJSON(w, http.StatusOK, result)
@@ -1086,20 +1090,20 @@ func main() {
 	r.Patch("/api/v1/admin/tournaments/{id}/teams/seeding/reorder", func(w http.ResponseWriter, r *http.Request) {
 		admin, err := authenticateRequest(r)
 		if err != nil {
-			http.Error(w, "?? ????????????", http.StatusUnauthorized)
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
 
 		tournamentID := chi.URLParam(r, "id")
 		var payload reorderSeedingRequest
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-			http.Error(w, "???????????? JSON", http.StatusBadRequest)
+			http.Error(w, "invalid JSON", http.StatusBadRequest)
 			return
 		}
 
 		result, err := reorderTeamSeeding(r.Context(), conn, tournamentID, payload.TeamIDs)
 		if err == sql.ErrNoRows {
-			http.Error(w, "?? ???????", http.StatusNotFound)
+			http.Error(w, "not found", http.StatusNotFound)
 			return
 		}
 		var cErr clientError
@@ -1112,7 +1116,7 @@ func main() {
 			return
 		}
 		if err := insertAuditLog(r.Context(), conn, admin.ID, result.TournamentID, "tournament", result.TournamentID, "seeding_reorder", payload); err != nil {
-			http.Error(w, "?? ??????? ???????? ?????-???", http.StatusInternalServerError)
+			http.Error(w, "failed to create audit log", http.StatusInternalServerError)
 			return
 		}
 		writeJSON(w, http.StatusOK, result)
@@ -1123,20 +1127,20 @@ func main() {
 	r.Post("/api/v1/admin/tournaments/{id}/bracket/generate", func(w http.ResponseWriter, r *http.Request) {
 		admin, err := authenticateRequest(r)
 		if err != nil {
-			http.Error(w, "?? ????????????", http.StatusUnauthorized)
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
 
 		tournamentID := chi.URLParam(r, "id")
 		var payload generateBracketRequest
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-			http.Error(w, "???????????? JSON", http.StatusBadRequest)
+			http.Error(w, "invalid JSON", http.StatusBadRequest)
 			return
 		}
 
 		result, err := generateSingleEliminationBracket(r.Context(), conn, tournamentID, payload.Overwrite)
 		if err == sql.ErrNoRows {
-			http.Error(w, "?? ???????", http.StatusNotFound)
+			http.Error(w, "not found", http.StatusNotFound)
 			return
 		}
 		var cErr clientError
@@ -1153,7 +1157,7 @@ func main() {
 			action = "bracket_regenerate"
 		}
 		if err := insertAuditLog(r.Context(), conn, admin.ID, result.TournamentID, "tournament", result.TournamentID, action, payload); err != nil {
-			http.Error(w, "?? ??????? ???????? ?????-???", http.StatusInternalServerError)
+			http.Error(w, "failed to create audit log", http.StatusInternalServerError)
 			return
 		}
 		writeJSON(w, http.StatusOK, result)
@@ -1161,7 +1165,7 @@ func main() {
 
 	r.Get("/api/v1/admin/tournaments/{id}/schedule", func(w http.ResponseWriter, r *http.Request) {
 		if _, err := authenticateRequest(r); err != nil {
-			http.Error(w, "?? ????????????", http.StatusUnauthorized)
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
 
@@ -1183,20 +1187,20 @@ func main() {
 	r.Post("/api/v1/admin/tournaments/{id}/schedule/generate", func(w http.ResponseWriter, r *http.Request) {
 		admin, err := authenticateRequest(r)
 		if err != nil {
-			http.Error(w, "?? ????????????", http.StatusUnauthorized)
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
 
 		tournamentID := chi.URLParam(r, "id")
 		var payload generateScheduleRequest
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-			http.Error(w, "???????????? JSON", http.StatusBadRequest)
+			http.Error(w, "invalid JSON", http.StatusBadRequest)
 			return
 		}
 
 		result, err := generateSchedule(r.Context(), conn, tournamentID, payload.Overwrite)
 		if err == sql.ErrNoRows {
-			http.Error(w, "?? ???????", http.StatusNotFound)
+			http.Error(w, "not found", http.StatusNotFound)
 			return
 		}
 		var cErr clientError
@@ -1213,7 +1217,7 @@ func main() {
 			action = "schedule_regenerate"
 		}
 		if err := insertAuditLog(r.Context(), conn, admin.ID, result.TournamentID, "tournament", result.TournamentID, action, payload); err != nil {
-			http.Error(w, "?? ??????? ???????? ?????-???", http.StatusInternalServerError)
+			http.Error(w, "failed to create audit log", http.StatusInternalServerError)
 			return
 		}
 		writeJSON(w, http.StatusOK, result)
@@ -1222,20 +1226,20 @@ func main() {
 	r.Patch("/api/v1/admin/tournaments/{id}/schedule/reorder", func(w http.ResponseWriter, r *http.Request) {
 		admin, err := authenticateRequest(r)
 		if err != nil {
-			http.Error(w, "?? ????????????", http.StatusUnauthorized)
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
 
 		tournamentID := chi.URLParam(r, "id")
 		var payload reorderScheduleRequest
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-			http.Error(w, "???????????? JSON", http.StatusBadRequest)
+			http.Error(w, "invalid JSON", http.StatusBadRequest)
 			return
 		}
 
 		result, err := reorderSchedule(r.Context(), conn, tournamentID, payload.MatchIDs)
 		if err == sql.ErrNoRows {
-			http.Error(w, "?? ???????", http.StatusNotFound)
+			http.Error(w, "not found", http.StatusNotFound)
 			return
 		}
 		var cErr clientError
@@ -1248,7 +1252,7 @@ func main() {
 			return
 		}
 		if err := insertAuditLog(r.Context(), conn, admin.ID, result.TournamentID, "tournament", result.TournamentID, "schedule_reorder", payload); err != nil {
-			http.Error(w, "?? ??????? ???????? ?????-???", http.StatusInternalServerError)
+			http.Error(w, "failed to create audit log", http.StatusInternalServerError)
 			return
 		}
 		writeJSON(w, http.StatusOK, result)
@@ -1256,7 +1260,7 @@ func main() {
 
 	r.Get("/api/v1/admin/tournaments/{id}/round-settings", func(w http.ResponseWriter, r *http.Request) {
 		if _, err := authenticateRequest(r); err != nil {
-			http.Error(w, "?? ????????????", http.StatusUnauthorized)
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
 
@@ -1272,26 +1276,26 @@ func main() {
 	r.Patch("/api/v1/admin/tournaments/{id}/round-settings/{round}", func(w http.ResponseWriter, r *http.Request) {
 		admin, err := authenticateRequest(r)
 		if err != nil {
-			http.Error(w, "?? ????????????", http.StatusUnauthorized)
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
 
 		tournamentID := chi.URLParam(r, "id")
 		round := parsePositiveInt(chi.URLParam(r, "round"), 0)
 		if round < 1 {
-			http.Error(w, "???????????? ?????", http.StatusBadRequest)
+			http.Error(w, "invalid round", http.StatusBadRequest)
 			return
 		}
 
 		var payload updateRoundSettingRequest
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-			http.Error(w, "???????????? JSON", http.StatusBadRequest)
+			http.Error(w, "invalid JSON", http.StatusBadRequest)
 			return
 		}
 
 		item, err := updateRoundSetting(r.Context(), conn, tournamentID, round, payload)
 		if err == sql.ErrNoRows {
-			http.Error(w, "?? ???????", http.StatusNotFound)
+			http.Error(w, "not found", http.StatusNotFound)
 			return
 		}
 		var cErr clientError
@@ -1305,7 +1309,7 @@ func main() {
 		}
 		if parsedID, parseErr := parseTournamentIDParam(tournamentID); parseErr == nil {
 			if err := insertAuditLog(r.Context(), conn, admin.ID, parsedID, "round", int64(round), "update", payload); err != nil {
-				http.Error(w, "?? ??????? ???????? ?????-???", http.StatusInternalServerError)
+				http.Error(w, "failed to create audit log", http.StatusInternalServerError)
 				return
 			}
 		}
@@ -1318,7 +1322,7 @@ func main() {
 	r.Patch("/api/v1/admin/tournaments/{id}/matches/{matchID}/sides", func(w http.ResponseWriter, r *http.Request) {
 		admin, err := authenticateRequest(r)
 		if err != nil {
-			http.Error(w, "?? ????????????", http.StatusUnauthorized)
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
 
@@ -1326,13 +1330,13 @@ func main() {
 		matchID := chi.URLParam(r, "matchID")
 		var payload updateMatchSidesRequest
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-			http.Error(w, "???????????? JSON", http.StatusBadRequest)
+			http.Error(w, "invalid JSON", http.StatusBadRequest)
 			return
 		}
 
 		item, err := updateMatchSides(r.Context(), conn, tournamentID, matchID, payload)
 		if err == sql.ErrNoRows {
-			http.Error(w, "?? ???????", http.StatusNotFound)
+			http.Error(w, "not found", http.StatusNotFound)
 			return
 		}
 		var cErr clientError
@@ -1346,7 +1350,7 @@ func main() {
 		}
 		if parsedID, parseErr := parseTournamentIDParam(tournamentID); parseErr == nil {
 			if err := insertAuditLog(r.Context(), conn, admin.ID, parsedID, "match", item.MatchID, "sides_update", payload); err != nil {
-				http.Error(w, "?? ??????? ???????? ?????-???", http.StatusInternalServerError)
+				http.Error(w, "failed to create audit log", http.StatusInternalServerError)
 				return
 			}
 			writeJSON(w, http.StatusOK, item)
@@ -1360,7 +1364,7 @@ func main() {
 	r.Patch("/api/v1/admin/tournaments/{id}/matches/{matchID}/status", func(w http.ResponseWriter, r *http.Request) {
 		admin, err := authenticateRequest(r)
 		if err != nil {
-			http.Error(w, "?? ????????????", http.StatusUnauthorized)
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
 
@@ -1368,13 +1372,13 @@ func main() {
 		matchID := chi.URLParam(r, "matchID")
 		var payload updateMatchStatusRequest
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-			http.Error(w, "???????????? JSON", http.StatusBadRequest)
+			http.Error(w, "invalid JSON", http.StatusBadRequest)
 			return
 		}
 
 		item, err := updateMatchStatus(r.Context(), conn, tournamentID, matchID, payload)
 		if err == sql.ErrNoRows {
-			http.Error(w, "?? ???????", http.StatusNotFound)
+			http.Error(w, "not found", http.StatusNotFound)
 			return
 		}
 		var cErr clientError
@@ -1388,7 +1392,7 @@ func main() {
 		}
 		if parsedID, parseErr := parseTournamentIDParam(tournamentID); parseErr == nil {
 			if err := insertAuditLog(r.Context(), conn, admin.ID, parsedID, "match", item.MatchID, "status_update", payload); err != nil {
-				http.Error(w, "?? ??????? ???????? ?????-???", http.StatusInternalServerError)
+				http.Error(w, "failed to create audit log", http.StatusInternalServerError)
 				return
 			}
 			writeJSON(w, http.StatusOK, item)
@@ -1402,7 +1406,7 @@ func main() {
 	r.Patch("/api/v1/admin/tournaments/{id}/matches/{matchID}/score", func(w http.ResponseWriter, r *http.Request) {
 		admin, err := authenticateRequest(r)
 		if err != nil {
-			http.Error(w, "?? ????????????", http.StatusUnauthorized)
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
 
@@ -1410,13 +1414,13 @@ func main() {
 		matchID := chi.URLParam(r, "matchID")
 		var payload updateMatchScoreRequest
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-			http.Error(w, "???????????? JSON", http.StatusBadRequest)
+			http.Error(w, "invalid JSON", http.StatusBadRequest)
 			return
 		}
 
 		item, err := updateMatchScore(r.Context(), conn, tournamentID, matchID, payload)
 		if err == sql.ErrNoRows {
-			http.Error(w, "?? ???????", http.StatusNotFound)
+			http.Error(w, "not found", http.StatusNotFound)
 			return
 		}
 		var cErr clientError
@@ -1430,7 +1434,7 @@ func main() {
 		}
 		if parsedID, parseErr := parseTournamentIDParam(tournamentID); parseErr == nil {
 			if err := insertAuditLog(r.Context(), conn, admin.ID, parsedID, "match", item.MatchID, "score_update", payload); err != nil {
-				http.Error(w, "?? ??????? ???????? ?????-???", http.StatusInternalServerError)
+				http.Error(w, "failed to create audit log", http.StatusInternalServerError)
 				return
 			}
 			writeJSON(w, http.StatusOK, item)
@@ -1443,7 +1447,7 @@ func main() {
 	r.Patch("/api/v1/admin/tournaments/{id}/matches/{matchID}/result", func(w http.ResponseWriter, r *http.Request) {
 		admin, err := authenticateRequest(r)
 		if err != nil {
-			http.Error(w, "?? ????????????", http.StatusUnauthorized)
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
 
@@ -1451,13 +1455,13 @@ func main() {
 		matchID := chi.URLParam(r, "matchID")
 		var payload updateMatchResultRequest
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-			http.Error(w, "???????????? JSON", http.StatusBadRequest)
+			http.Error(w, "invalid JSON", http.StatusBadRequest)
 			return
 		}
 
 		item, err := updateMatchResult(r.Context(), conn, tournamentID, matchID, payload)
 		if err == sql.ErrNoRows {
-			http.Error(w, "?? ???????", http.StatusNotFound)
+			http.Error(w, "not found", http.StatusNotFound)
 			return
 		}
 		var cErr clientError
@@ -1471,7 +1475,7 @@ func main() {
 		}
 		if parsedID, parseErr := parseTournamentIDParam(tournamentID); parseErr == nil {
 			if err := insertAuditLog(r.Context(), conn, admin.ID, parsedID, "match", item.MatchID, "result_update", payload); err != nil {
-				http.Error(w, "?? ??????? ???????? ?????-???", http.StatusInternalServerError)
+				http.Error(w, "failed to create audit log", http.StatusInternalServerError)
 				return
 			}
 			writeJSON(w, http.StatusOK, item)
@@ -1485,7 +1489,7 @@ func main() {
 	r.Post("/api/v1/admin/tournaments/{id}/matches/{matchID}/forfeit", func(w http.ResponseWriter, r *http.Request) {
 		admin, err := authenticateRequest(r)
 		if err != nil {
-			http.Error(w, "?? ????????????", http.StatusUnauthorized)
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
 
@@ -1493,13 +1497,13 @@ func main() {
 		matchID := chi.URLParam(r, "matchID")
 		var payload forfeitMatchRequest
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-			http.Error(w, "???????????? JSON", http.StatusBadRequest)
+			http.Error(w, "invalid JSON", http.StatusBadRequest)
 			return
 		}
 
 		item, err := forfeitMatch(r.Context(), conn, tournamentID, matchID, payload)
 		if err == sql.ErrNoRows {
-			http.Error(w, "?? ???????", http.StatusNotFound)
+			http.Error(w, "not found", http.StatusNotFound)
 			return
 		}
 		var cErr clientError
@@ -1513,7 +1517,7 @@ func main() {
 		}
 		if parsedID, parseErr := parseTournamentIDParam(tournamentID); parseErr == nil {
 			if err := insertAuditLog(r.Context(), conn, admin.ID, parsedID, "match", item.MatchID, "forfeit", payload); err != nil {
-				http.Error(w, "?? ??????? ???????? ?????-???", http.StatusInternalServerError)
+				http.Error(w, "failed to create audit log", http.StatusInternalServerError)
 				return
 			}
 			writeJSON(w, http.StatusOK, item)
@@ -1527,14 +1531,14 @@ func main() {
 	r.Post("/api/v1/admin/tournaments/{id}/start", func(w http.ResponseWriter, r *http.Request) {
 		admin, err := authenticateRequest(r)
 		if err != nil {
-			http.Error(w, "?? ????????????", http.StatusUnauthorized)
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
 
 		tournamentID := chi.URLParam(r, "id")
 		item, err := startTournament(r.Context(), conn, tournamentID)
 		if err == sql.ErrNoRows {
-			http.Error(w, "?? ???????", http.StatusNotFound)
+			http.Error(w, "not found", http.StatusNotFound)
 			return
 		}
 		var cErr clientError
@@ -1547,7 +1551,7 @@ func main() {
 			return
 		}
 		if err := insertAuditLog(r.Context(), conn, admin.ID, item.ID, "tournament", item.ID, "start", map[string]string{"status": item.Status}); err != nil {
-			http.Error(w, "?? ??????? ???????? ?????-???", http.StatusInternalServerError)
+			http.Error(w, "failed to create audit log", http.StatusInternalServerError)
 			return
 		}
 		writeJSON(w, http.StatusOK, item)
@@ -1557,20 +1561,20 @@ func main() {
 	r.Patch("/api/v1/admin/tournaments/{id}/visibility", func(w http.ResponseWriter, r *http.Request) {
 		admin, err := authenticateRequest(r)
 		if err != nil {
-			http.Error(w, "?? ????????????", http.StatusUnauthorized)
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
 
 		tournamentID := chi.URLParam(r, "id")
 		var payload updateVisibilityRequest
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-			http.Error(w, "???????????? JSON", http.StatusBadRequest)
+			http.Error(w, "invalid JSON", http.StatusBadRequest)
 			return
 		}
 
 		item, err := updateTournamentVisibility(r.Context(), conn, tournamentID, payload)
 		if err == sql.ErrNoRows {
-			http.Error(w, "?? ???????", http.StatusNotFound)
+			http.Error(w, "not found", http.StatusNotFound)
 			return
 		}
 		var cErr clientError
@@ -1583,7 +1587,7 @@ func main() {
 			return
 		}
 		if err := insertAuditLog(r.Context(), conn, admin.ID, item.ID, "tournament", item.ID, "visibility_update", payload); err != nil {
-			http.Error(w, "?? ??????? ???????? ?????-???", http.StatusInternalServerError)
+			http.Error(w, "failed to create audit log", http.StatusInternalServerError)
 			return
 		}
 		writeJSON(w, http.StatusOK, item)
@@ -2130,7 +2134,7 @@ func parsePositiveInt(raw string, fallback int) int {
 func parseTournamentIDParam(raw string) (int64, error) {
 	value, err := strconv.ParseInt(strings.TrimSpace(raw), 10, 64)
 	if err != nil || value < 1 {
-		return 0, errors.New("???????????? id ???????")
+		return 0, errors.New("invalid tournament id")
 	}
 	return value, nil
 }
@@ -4264,7 +4268,7 @@ func updateMatchScore(
 	if payload.ScoreA < 0 || payload.ScoreB < 0 {
 		return matchScoreResponse{}, clientError{
 			Status:  http.StatusBadRequest,
-			Message: "???? ?? ????? ???? ??????????????",
+			Message: "scores must not be negative",
 		}
 	}
 
@@ -4311,31 +4315,31 @@ WHERE m.tournament_id = $1 AND m.id = $2`
 	if tournamentStatus != "RUNNING" {
 		return matchScoreResponse{}, clientError{
 			Status:  http.StatusBadRequest,
-			Message: "?????? ?????? ???? ? ??????? ???? (RUNNING) ??? ???????? ?????",
+			Message: "tournament must be RUNNING to update match score",
 		}
 	}
 	if matchStatus == "FINISHED" {
 		return matchScoreResponse{}, clientError{
 			Status:  http.StatusBadRequest,
-			Message: "???? ??? ????????",
+			Message: "match is already finished",
 		}
 	}
 	if matchStatus == "CANCELED" {
 		return matchScoreResponse{}, clientError{
 			Status:  http.StatusBadRequest,
-			Message: "?????? ????????? ?????????? ????",
+			Message: "canceled match cannot be updated",
 		}
 	}
 	if bestOf < 1 || bestOf%2 == 0 {
 		return matchScoreResponse{}, clientError{
 			Status:  http.StatusBadRequest,
-			Message: "???????????? ?????? ????? (BO) ?????",
+			Message: "invalid best-of value",
 		}
 	}
 	if !teamAID.Valid || !teamBID.Valid {
 		return matchScoreResponse{}, clientError{
 			Status:  http.StatusBadRequest,
-			Message: "? ????? ?????? ???? ????????? ??? ???????",
+			Message: "both teams must be assigned before updating score",
 		}
 	}
 
@@ -4343,13 +4347,13 @@ WHERE m.tournament_id = $1 AND m.id = $2`
 	if payload.ScoreA > requiredWins || payload.ScoreB > requiredWins {
 		return matchScoreResponse{}, clientError{
 			Status:  http.StatusBadRequest,
-			Message: "???? ?? ????? ????????? ????????? ????? ?????",
+			Message: "score cannot exceed required wins",
 		}
 	}
 	if payload.ScoreA == payload.ScoreB && payload.ScoreA == requiredWins {
 		return matchScoreResponse{}, clientError{
 			Status:  http.StatusBadRequest,
-			Message: "???????? ???? ?????????? ??? ?????????? ?????",
+			Message: "draw score is not allowed for a completed match",
 		}
 	}
 
